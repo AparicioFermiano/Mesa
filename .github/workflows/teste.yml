@@ -1,0 +1,74 @@
+name: Atualiza a data apartir do status
+
+on:
+  projects_v2_item:
+    types: [edited, created, moved]
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Sobe os dados do card para capturar o corpo
+        id: payload
+        run: echo '${{ toJson(github.event) }}' > event.json
+
+      - name: Extract info
+        id: info
+        run: |
+          ISSUE_ID=$(jq -r '.projects_v2_item.content_node_id' event.json)
+          STATUS=$(jq -r '.projects_v2_item.field_value_by_name.Status.name' event.json)
+
+          echo "ISSUE_ID=$ISSUE_ID" >> $GITHUB_OUTPUT
+          echo "STATUS=$STATUS" >> $GITHUB_OUTPUT
+
+      - name: Get issue
+        id: issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const id = "${{ steps.info.outputs.ISSUE_ID }}";
+
+            const data = await github.graphql(
+              `query($id: ID!) {
+                node(id: $id) {
+                  ... on Issue {
+                    number
+                    body
+                    repository { owner { login } name }
+                  }
+                }
+              }`,
+              { id }
+            );
+
+            core.setOutput("number", data.node.number);
+            core.setOutput("body", data.node.body);
+            core.setOutput("owner", data.node.repository.owner.login);
+            core.setOutput("repo", data.node.repository.name);
+
+      - name: Atualiza o status
+        if: steps.info.outputs.STATUS != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = "${{ steps.info.outputs.STATUS }}";
+            const now = new Date().toLocaleString("pt-BR");
+            let body = `${{ steps.issue.outputs.body }}`;
+
+            // Atualiza Data de início quando mover para In progress
+            if (status === "In progress") {
+              body = body.replace(/(Data de início:\s*).*/m, `$1${now}`);
+            }
+
+            // Atualiza Data de fim quando mover para Done
+            if (status === "Done") {
+              body = body.replace(/(Data de fim:\s*).*/m, `$1${now}`);
+            }
+
+            await github.rest.issues.update({
+              owner: "${{ steps.issue.outputs.owner }}",
+              repo: "${{ steps.issue.outputs.repo }}",
+              issue_number: ${{ steps.issue.outputs.number }},
+              body
+            });
